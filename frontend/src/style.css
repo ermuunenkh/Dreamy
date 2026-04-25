@@ -129,6 +129,36 @@ input[type="range"]::-webkit-slider-thumb {
   margin-top: 2px;
 }
 
+/* ── Mode tabs ────────────────────────────────────────────────────────────── */
+.mode-tabs {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 2px;
+}
+
+.mode-btn {
+  flex: 1;
+  background: rgba(140, 70, 180, 0.10);
+  border: 1px solid rgba(180, 100, 220, 0.20);
+  border-radius: 999px;
+  color: rgba(200, 165, 220, 0.65);
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 5px 6px;
+  cursor: pointer;
+  transition: background 0.18s, color 0.18s, border-color 0.18s;
+}
+.mode-btn:hover {
+  background: rgba(160, 80, 200, 0.22);
+  color: rgba(225, 195, 245, 0.90);
+}
+.mode-btn.active {
+  background: rgba(160, 80, 200, 0.36);
+  border-color: rgba(210, 130, 255, 0.50);
+  color: #f0d0ff;
+}
+
 .panel-buttons button {
   background: rgba(160, 80, 200, 0.18);
   border: 1px solid rgba(180, 100, 220, 0.30);

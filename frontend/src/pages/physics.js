@@ -83,20 +83,41 @@ function makeRodCurve() {
 }
 
 // ── Particles ──────────────────────────────────────────────────────────────
-function makeParticles() {
+// spiralAmount : 0 = flat (same as default), 1 = maximum inward curl
+//
+// Spiral mode curls the cloth around its own vertical (Y) axis — like rolling
+// a piece of paper left-to-right.  The roll radius R controls tightness:
+//   large R → nearly flat,  small R → tight scroll (rose-petal curl).
+// Both rest.x and rest.z change, so the constraints adapt automatically.
+function makeParticles(mode = 'default', spiralAmount = 0) {
   const ps = [];
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-      const t      = c / (COLS - 1);
-      const x      = (t - 0.5) * W;
-      const y      = -ROD_Y + (r / (ROWS - 1)) * H;
-      const z      = petalEdgeZ(t) + (Math.random() - 0.5) * 0.006;
+      const u  = c / (COLS - 1);
+      const v  = r / (ROWS - 1);
+      const ry = -ROD_Y + v * H;
+
+      let rx, rz;
+
+      if (mode === 'spiral' && spiralAmount > 0) {
+        // Roll radius: 6 = nearly flat → 0.35 = very tight
+        const rollR  = 6.0 * Math.pow(1.0 - spiralAmount, 1.5) + 0.35;
+        const flatX  = (u - 0.5) * W;           // original grid x  (−W/2 … +W/2)
+        const angle  = flatX / rollR;            // arc angle on the cylinder
+        rx = rollR * Math.sin(angle);
+        rz = rollR * (1.0 - Math.cos(angle));   // bows toward viewer
+      } else {
+        rx = (u - 0.5) * W;
+        rz = petalEdgeZ(u);
+      }
+
+      const z      = rz + (Math.random() - 0.5) * 0.006;
       const active = isInPetal(r, c);
       ps.push({
-        pos:    new THREE.Vector3(x, y, z),
-        prev:   new THREE.Vector3(x, y, z),
-        rest:   new THREE.Vector3(x, -ROD_Y + (r / (ROWS - 1)) * H, petalEdgeZ(t)),
-        pinned: false,  // no bar → shape-restoration keeps the petal in place
+        pos:    new THREE.Vector3(rx, ry, z),
+        prev:   new THREE.Vector3(rx, ry, z),
+        rest:   new THREE.Vector3(rx, ry, rz),
+        pinned: false,
         active,
       });
     }
@@ -252,17 +273,37 @@ float petalHW(float vp) {
 `;
 
 // ── Control panel ──────────────────────────────────────────────────────────
-function createPanel(onStiffnessChange, onReset, onWind) {
+function createPanel({ onStiffness, onReset, onWind, onMode, onSpiral, onTilt }) {
   const panel = document.createElement('div');
   panel.id = 'physics-panel';
   panel.innerHTML = `
     <div class="panel-title">🌸 Petal Physics</div>
+
+    <div class="mode-tabs">
+      <button class="mode-btn active" data-mode="default">Default</button>
+      <button class="mode-btn"        data-mode="spiral">🌀 Spiral</button>
+      <button class="mode-btn"        data-mode="tilted">↗ Tilted</button>
+    </div>
+
     <label class="param-row">
       <span class="param-label">Stiffness</span>
       <input type="range" id="stiffness-slider" min="1" max="100" value="35" step="1">
       <span class="param-val" id="stiffness-val">35%</span>
     </label>
     <div class="param-hint" id="stiffness-hint">Silk — gentle drape</div>
+
+    <label class="param-row" id="spiral-row" style="display:none">
+      <span class="param-label">Curl</span>
+      <input type="range" id="spiral-slider" min="0" max="100" value="50" step="1">
+      <span class="param-val" id="spiral-val">50%</span>
+    </label>
+
+    <label class="param-row" id="tilt-row" style="display:none">
+      <span class="param-label">Tilt</span>
+      <input type="range" id="tilt-slider" min="-90" max="90" value="0" step="1">
+      <span class="param-val" id="tilt-val">0°</span>
+    </label>
+
     <div class="panel-buttons">
       <button id="reset-btn">↺ Reset</button>
       <button id="wind-btn">💨 Wind</button>
@@ -270,9 +311,10 @@ function createPanel(onStiffnessChange, onReset, onWind) {
   `;
   document.body.appendChild(panel);
 
-  const slider   = panel.querySelector('#stiffness-slider');
-  const valLabel = panel.querySelector('#stiffness-val');
-  const hint     = panel.querySelector('#stiffness-hint');
+  // ── Stiffness ──
+  const stiffSlider = panel.querySelector('#stiffness-slider');
+  const stiffVal    = panel.querySelector('#stiffness-val');
+  const hint        = panel.querySelector('#stiffness-hint');
   const hints = [
     [0,  15,  'Rubber — stretches wildly'],
     [15, 35,  'Very soft and elastic'],
@@ -282,13 +324,46 @@ function createPanel(onStiffnessChange, onReset, onWind) {
     [88, 96,  'Cardboard — almost rigid'],
     [96, 101, 'Solid — no deformation'],
   ];
-  slider.addEventListener('input', () => {
-    const v = Number(slider.value);
-    valLabel.textContent = v + '%';
+  stiffSlider.addEventListener('input', () => {
+    const v = Number(stiffSlider.value);
+    stiffVal.textContent = v + '%';
     const h = hints.find(([lo, hi]) => v >= lo && v < hi);
     if (h) hint.textContent = h[2];
-    onStiffnessChange(v / 100);
+    onStiffness(v / 100);
   });
+
+  // ── Mode tabs ──
+  const spiralRow = panel.querySelector('#spiral-row');
+  const tiltRow   = panel.querySelector('#tilt-row');
+  panel.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      panel.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const m = btn.dataset.mode;
+      spiralRow.style.display = m === 'spiral' ? 'flex' : 'none';
+      tiltRow.style.display   = m === 'tilted' ? 'flex' : 'none';
+      onMode(m);
+    });
+  });
+
+  // ── Spiral slider ──
+  const spiralSlider = panel.querySelector('#spiral-slider');
+  const spiralVal    = panel.querySelector('#spiral-val');
+  spiralSlider.addEventListener('input', () => {
+    const v = Number(spiralSlider.value);
+    spiralVal.textContent = v + '%';
+    onSpiral(v / 100);
+  });
+
+  // ── Tilt slider ──
+  const tiltSlider = panel.querySelector('#tilt-slider');
+  const tiltVal    = panel.querySelector('#tilt-val');
+  tiltSlider.addEventListener('input', () => {
+    const deg = Number(tiltSlider.value);
+    tiltVal.textContent = deg + '°';
+    onTilt(deg * Math.PI / 180);
+  });
+
   panel.querySelector('#reset-btn').addEventListener('click', onReset);
   panel.querySelector('#wind-btn').addEventListener('click', onWind);
   return panel;
@@ -326,12 +401,16 @@ export function mountPhysics(container) {
   fill.position.set(-3, 1, 2);
   scene.add(fill);
 
-  // ── Petal ──
-  let particles   = makeParticles();
+  // ── State ──
+  let mode         = 'default';
+  let stiffness    = 0.35;
+  let windOn       = false;
+  let windTime     = 0;
+  let spiralAmount = 0.5;               // used only in 'spiral' mode
+  let tiltAngle    = 0; // used only in 'tilted' mode
+
+  let particles   = makeParticles(mode, spiralAmount);
   let constraints = makeConstraints(particles);
-  let stiffness   = 0.35;
-  let windOn      = false;
-  let windTime    = 0;
 
   const geo = buildClothGeo(particles);
 
@@ -345,23 +424,20 @@ export function mountPhysics(container) {
     transparent: true,
   });
 
-  // Force UV varying to be compiled even without a texture map
   mat.defines = mat.defines || {};
   mat.defines['USE_UV'] = '';
 
   mat.onBeforeCompile = (shader) => {
-    // Inject the petal boundary function after #include <common>
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <common>',
       '#include <common>\n' + PETAL_GLSL
     );
-    // Per-pixel smooth clip before the alpha test
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <alphatest_fragment>',
       `{
-        float vp   = 1.0 - vUv.y;              // 0 = top, 1 = bottom
+        float vp   = 1.0 - vUv.y;
         float hw   = petalHW(vp);
-        float dist = abs(vUv.x - 0.5) - hw;    // negative = inside
+        float dist = abs(vUv.x - 0.5) - hw;
         float a    = smoothstep(0.006, -0.003, dist);
         if (a < 0.001) discard;
         diffuseColor.a *= a;
@@ -370,14 +446,38 @@ export function mountPhysics(container) {
     );
   };
 
-  scene.add(new THREE.Mesh(geo, mat));
+  // meshGroup lets us rotate the entire cloth (used in 'tilted' mode)
+  const meshGroup = new THREE.Group();
+  meshGroup.add(new THREE.Mesh(geo, mat));
+  scene.add(meshGroup);
 
-// ── Panel ──
-  _panel = createPanel(
-    v  => { stiffness = v; },
-    () => { particles = makeParticles(); constraints = makeConstraints(particles); },
-    () => { windOn = !windOn; }
-  );
+  // ── Mode switching ──
+  function applyMode(m) {
+    mode        = m;
+    particles   = makeParticles(mode, spiralAmount);
+    constraints = makeConstraints(particles);
+    meshGroup.rotation.x = mode === 'tilted' ? tiltAngle : 0;
+    meshGroup.rotation.z = 0;
+  }
+
+  // ── Panel ──
+  _panel = createPanel({
+    onStiffness: v   => { stiffness = v; },
+    onReset:     ()  => { particles = makeParticles(mode, spiralAmount); constraints = makeConstraints(particles); },
+    onWind:      ()  => { windOn = !windOn; },
+    onMode:      m   => { applyMode(m); },
+    onSpiral:    amt => {
+      spiralAmount = amt;
+      if (mode === 'spiral') {
+        particles   = makeParticles('spiral', spiralAmount);
+        constraints = makeConstraints(particles);
+      }
+    },
+    onTilt:      ang => {
+      tiltAngle = ang;
+      if (mode === 'tilted') meshGroup.rotation.x = tiltAngle;
+    },
+  });
 
   // ── Resize ──
   const onResize = () => {
