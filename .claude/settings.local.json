@@ -4,7 +4,8 @@
       "Bash(npm --version)",
       "WebFetch(domain:www.desmos.com)",
       "WebSearch",
-      "WebFetch(domain:saved-work.desmos.com)"
+      "WebFetch(domain:saved-work.desmos.com)",
+      "mcp__Claude_Preview__preview_start"
     ]
   }
 }

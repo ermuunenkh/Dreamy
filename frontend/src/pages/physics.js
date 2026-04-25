@@ -2,52 +2,64 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { EffectComposer, RenderPass, EffectPass, BloomEffect } from 'postprocessing';
 
-let _raf     = null;
+let _raf      = null;
 let _renderer = null;
-let _panel   = null;
+let _panel    = null;
 
 // ── Grid constants ─────────────────────────────────────────────────────────
-const COLS       = 42;     // particles across
-const ROWS       = 42;     // particles down
+const COLS       = 48;
+const ROWS       = 48;
 const W          = 2.8;    // cloth width  (world units)
 const H          = 2.8;    // cloth height
-const GRAVITY    = -9.0;
-const DAMPING    = 0.992;
-const ROD_Y      = 1.35;   // height of the rod
-const CURL_DEPTH = 0.42;   // how far the petal edges bow toward the viewer
+const GRAVITY    = 0;      // disabled — user will enable later
+const DAMPING    = 0.986;
+const ROD_Y      = 1.35;
+const CURL_DEPTH = 0.32;
 
-// ── Petal Z-profile ────────────────────────────────────────────────────────
-// U-shape: edges at +CURL_DEPTH, centre at 0 → creates the characteristic
-// central fold you see on a real rose petal.
-// t ∈ [0,1]  →  left edge … right edge
-function petalEdgeZ(t) {
-  return CURL_DEPTH * (1.0 - 4.0 * t * (1.0 - t));
-}
+// U-shape Z: edges bow toward viewer, centre sits back
+function petalEdgeZ(t) { return CURL_DEPTH * (1.0 - 4.0 * t * (1.0 - t)); }
 
-// ── Petal silhouette ───────────────────────────────────────────────────────
-// v = 0 → top (WIDE, pinned row)
-// v = 1 → bottom (pointed tip)
+// ── Desmos shape — analytical boundary ────────────────────────────────────
 //
-// Shape matches the reference photo:
-//   • Top arch  : gently rounds the upper corners (not a hard right angle)
-//   • Broad body: stays near maximum width for the upper half
-//   • Taper     : quadratic convergence to a rounded tip
-const PEAK_HW = 0.43;   // maximum half-width in u-fraction space
+// The shape is built from three Desmos curves mapped into UV space.
+// v = 0 → top of cloth (y_math = 3, pointed tip)
+// v = 1 → bottom of cloth (y_math = -1, base of ellipse)
+// y_math = 3 - 4*v
+//
+// Bottom (y≤0): half-ellipse  x²/4 + y² = 1
+// Upper arcs  (y≥0): rotated ellipse  ((dx·cos k − dy·sin k)²/6 + (dx·sin k + dy·cos k)² = R
+//   Right arc: center=(c11,c12)=(0.5218,1.3), k=-2.2, R=0.8
+//   Left arc : mirror by symmetry (same hw)
+//
+// SCALE maps math x [0,2] → UV half-width [0, 0.48]  (preserves ~1:1 aspect)
+const _SCALE = 0.24;
+
+// Pre-compute the right-arc constants once (k1 = -2.2, P = 6, R1 = 0.8)
+const _c11 = 0.5217794, _c12 = 1.3;
+const _k1  = -2.2,  _P = 6.0, _R1 = 0.8;
+const _a   = Math.cos(_k1);          //  cos(-2.2) ≈ -0.58850
+const _b   = Math.sin(_k1);          //  sin(-2.2) ≈ -0.80850
+const _A   = _a*_a/_P + _b*_b;       // quadratic coeff, constant across y
 
 function petalHalfWidth(v) {
-  if (v < 0.22) {
-    // Rounded top arch: smoothstep from 68% → 100% of peak width
-    const t    = v / 0.22;
-    const ease = t * t * (3.0 - 2.0 * t);
-    return PEAK_HW * (0.68 + 0.32 * ease);
-  } else if (v < 0.50) {
-    // Broad plateau — petal is widest here
-    return PEAK_HW;
-  } else {
-    // Quadratic taper to pointed tip
-    const t = (v - 0.50) / 0.50;
-    return PEAK_HW * (1.0 - t * t);
+  const y = 3.0 - 4.0 * v;                  // math y: 3 → top, -1 → bottom
+
+  if (y < -1.0) return 0;
+
+  if (y <= 0.0) {
+    // Bottom half-ellipse: x = 2·√(1 − y²)
+    return 2.0 * Math.sqrt(Math.max(0, 1.0 - y * y)) * _SCALE;
   }
+
+  // Upper right arc — solve the rotated ellipse for x (larger root = outer boundary)
+  const dy = y - _c12;
+  const B  = 2.0 * dy * _a * _b * (1.0 - 1.0 / _P);
+  const C  = dy*dy * (_b*_b/_P + _a*_a) - _R1;
+  const disc = B*B - 4.0*_A*C;
+  if (disc < 0) return 0;
+
+  const xRight = (-B + Math.sqrt(disc)) / (2.0 * _A) + _c11;
+  return Math.max(0, xRight) * _SCALE;
 }
 
 function isInPetal(r, c) {
@@ -56,17 +68,16 @@ function isInPetal(r, c) {
   return Math.abs(u - 0.5) <= petalHalfWidth(v);
 }
 
-// ── Rod geometry ───────────────────────────────────────────────────────────
-// Spans the pinned top edge of the petal (wide arch), following the U Z-curve.
+// ── Rod (tiny — matches the narrow petal tip) ──────────────────────────────
 function makeRodCurve() {
-  const topHW = petalHalfWidth(0);        // half-width fraction at v=0
-  const halfX = topHW * W + 0.14;         // world-unit half-span + small overhang
+  // Span the actual geometry at v≈0.06 (a few rows below the very tip)
+  const halfX = petalHalfWidth(0.06) * W + 0.10;
   const pts   = [];
-  for (let i = 0; i <= 32; i++) {
-    const t  = i / 32;
+  for (let i = 0; i <= 12; i++) {
+    const t  = i / 12;
     const x  = (t - 0.5) * halfX * 2;
     const tZ = x / W + 0.5;
-    pts.push(new THREE.Vector3(x, ROD_Y, petalEdgeZ(tZ)));
+    pts.push(new THREE.Vector3(x, -ROD_Y, petalEdgeZ(tZ)));
   }
   return new THREE.CatmullRomCurve3(pts);
 }
@@ -78,14 +89,14 @@ function makeParticles() {
     for (let c = 0; c < COLS; c++) {
       const t      = c / (COLS - 1);
       const x      = (t - 0.5) * W;
-      const y      = ROD_Y - (r / (ROWS - 1)) * H;
-      const z      = petalEdgeZ(t) + (Math.random() - 0.5) * 0.008;
+      const y      = -ROD_Y + (r / (ROWS - 1)) * H;
+      const z      = petalEdgeZ(t) + (Math.random() - 0.5) * 0.006;
       const active = isInPetal(r, c);
       ps.push({
         pos:    new THREE.Vector3(x, y, z),
         prev:   new THREE.Vector3(x, y, z),
-        rest:   new THREE.Vector3(x, y, petalEdgeZ(t)),
-        pinned: r === 0 && active,
+        rest:   new THREE.Vector3(x, -ROD_Y + (r / (ROWS - 1)) * H, petalEdgeZ(t)),
+        pinned: false,  // no bar → shape-restoration keeps the petal in place
         active,
       });
     }
@@ -95,42 +106,36 @@ function makeParticles() {
 
 // ── Constraints ────────────────────────────────────────────────────────────
 function makeConstraints(particles) {
-  const cs = [];
-  const idx    = (r, c) => r * COLS + c;
-  const rlen   = (i, j) => particles[i].pos.distanceTo(particles[j].pos);
+  const cs  = [];
+  const idx = (r, c) => r * COLS + c;
+  const rl  = (i, j) => particles[i].pos.distanceTo(particles[j].pos);
 
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       const i = idx(r, c);
       if (!particles[i].active) continue;
-
-      // Structural
       if (c + 1 < COLS && particles[idx(r, c+1)].active)
-        cs.push({ i, j: idx(r, c+1), rest: rlen(i, idx(r, c+1)), bend: false });
+        cs.push({ i, j: idx(r, c+1), rest: rl(i, idx(r, c+1)), bend: false });
       if (r + 1 < ROWS && particles[idx(r+1, c)].active)
-        cs.push({ i, j: idx(r+1, c), rest: rlen(i, idx(r+1, c)), bend: false });
-
-      // Shear
+        cs.push({ i, j: idx(r+1, c), rest: rl(i, idx(r+1, c)), bend: false });
       if (c + 1 < COLS && r + 1 < ROWS) {
         if (particles[idx(r+1, c+1)].active)
-          cs.push({ i, j: idx(r+1, c+1), rest: rlen(i, idx(r+1, c+1)), bend: false });
+          cs.push({ i, j: idx(r+1, c+1), rest: rl(i, idx(r+1, c+1)), bend: false });
         if (particles[idx(r, c+1)].active && particles[idx(r+1, c)].active)
           cs.push({ i: idx(r, c+1), j: idx(r+1, c),
-                    rest: rlen(idx(r, c+1), idx(r+1, c)), bend: false });
+                    rest: rl(idx(r, c+1), idx(r+1, c)), bend: false });
       }
-
-      // Bend (skip-1 — resists folding)
       if (c + 2 < COLS && particles[idx(r, c+2)].active)
-        cs.push({ i, j: idx(r, c+2), rest: rlen(i, idx(r, c+2)), bend: true });
+        cs.push({ i, j: idx(r, c+2), rest: rl(i, idx(r, c+2)), bend: true });
       if (r + 2 < ROWS && particles[idx(r+2, c)].active)
-        cs.push({ i, j: idx(r+2, c), rest: rlen(i, idx(r+2, c)), bend: true });
+        cs.push({ i, j: idx(r+2, c), rest: rl(i, idx(r+2, c)), bend: true });
     }
   }
   return cs;
 }
 
 // ── PBD step ───────────────────────────────────────────────────────────────
-function stepCloth(particles, constraints, dt, stiffness) {
+function stepCloth(particles, constraints, dt, stiffness, windAccelZ = 0) {
   const substeps = Math.round(8 + stiffness * 22);
   const iters    = Math.round(1 + stiffness * 4);
   const subDt2   = (dt / substeps) ** 2;
@@ -144,17 +149,14 @@ function stepCloth(particles, constraints, dt, stiffness) {
       const vz = (p.pos.z - p.prev.z) * DAMPING;
       p.prev.copy(p.pos);
       p.pos.x += vx;
-      p.pos.y += vy + GRAVITY * subDt2;
-      p.pos.z += vz;
+      p.pos.y += vy + GRAVITY * subDt2;       // GRAVITY = 0 for now
+      p.pos.z += vz + windAccelZ * subDt2;
     }
-
     for (let iter = 0; iter < iters; iter++) {
       for (const c of constraints) {
         const pa = particles[c.i], pb = particles[c.j];
         const k  = c.bend ? bendK : stiffness;
-        const dx = pb.pos.x - pa.pos.x;
-        const dy = pb.pos.y - pa.pos.y;
-        const dz = pb.pos.z - pa.pos.z;
+        const dx = pb.pos.x - pa.pos.x, dy = pb.pos.y - pa.pos.y, dz = pb.pos.z - pa.pos.z;
         const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
         if (dist < 1e-6) continue;
         const diff = (dist - c.rest) / dist * k * 0.5;
@@ -164,59 +166,19 @@ function stepCloth(particles, constraints, dt, stiffness) {
     }
   }
 
-  // Shape restoration — rigidity = stiffness³
   const rigidity = stiffness * stiffness * stiffness;
   if (rigidity < 0.001) return;
   for (const p of particles) {
     if (p.pinned || !p.active) continue;
-    const rx = p.rest.x - p.pos.x;
-    const ry = p.rest.y - p.pos.y;
-    const rz = p.rest.z - p.pos.z;
-    p.pos.x += rx * rigidity;
-    p.pos.y += ry * rigidity;
-    p.pos.z += rz * rigidity;
+    const rx = p.rest.x - p.pos.x, ry = p.rest.y - p.pos.y, rz = p.rest.z - p.pos.z;
+    p.pos.x += rx * rigidity; p.pos.y += ry * rigidity; p.pos.z += rz * rigidity;
     p.prev.x = p.pos.x - (p.pos.x - p.prev.x) * (1 - rigidity);
     p.prev.y = p.pos.y - (p.pos.y - p.prev.y) * (1 - rigidity);
     p.prev.z = p.pos.z - (p.pos.z - p.prev.z) * (1 - rigidity);
   }
 }
 
-// ── Smooth alpha map ───────────────────────────────────────────────────────
-// Renders the petal outline at full texture resolution, with a soft fade zone
-// of FADE UV-units. This removes the staircase from the geometry edge.
-function buildPetalAlphaMap() {
-  const SIZE = 1024;
-  const canvas = document.createElement('canvas');
-  canvas.width = SIZE; canvas.height = SIZE;
-  const ctx    = canvas.getContext('2d');
-  const img    = ctx.createImageData(SIZE, SIZE);
-  const data   = img.data;
-  const FADE   = 0.022;   // softness in UV space (≈ 1 grid step wide)
-
-  for (let py = 0; py < SIZE; py++) {
-    // With tex.flipY = false, canvas py=0 → uvY=1 (top of petal, v=0)
-    const v  = py / (SIZE - 1);           // 0 = top (wide), 1 = bottom (tip)
-    const hw = petalHalfWidth(v);
-
-    for (let px = 0; px < SIZE; px++) {
-      const u     = px / (SIZE - 1);
-      const dist  = Math.abs(u - 0.5) - hw;   // negative = inside, positive = outside
-      const alpha = Math.max(0.0, Math.min(1.0, -dist / FADE));
-      const i4    = (py * SIZE + px) * 4;
-      data[i4]     = 255;
-      data[i4 + 1] = 255;
-      data[i4 + 2] = 255;
-      data[i4 + 3] = Math.round(alpha * 255);
-    }
-  }
-
-  ctx.putImageData(img, 0, 0);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.flipY = false;   // our UVs already place row-0 at uvY=1
-  return tex;
-}
-
-// ── Build geometry ─────────────────────────────────────────────────────────
+// ── Build geometry (full rect — shader handles the cutout) ─────────────────
 function buildClothGeo(particles) {
   const posArr = new Float32Array(particles.length * 3);
   const uvArr  = new Float32Array(particles.length * 2);
@@ -228,17 +190,12 @@ function buildClothGeo(particles) {
     posArr[i*3+1] = particles[i].pos.y;
     posArr[i*3+2] = particles[i].pos.z;
     uvArr[i*2]    = c / (COLS - 1);
-    uvArr[i*2+1]  = 1 - r / (ROWS - 1);
+    uvArr[i*2+1]  = 1 - r / (ROWS - 1);  // 1 at top, 0 at bottom
   }
-
   for (let r = 0; r < ROWS - 1; r++) {
     for (let c = 0; c < COLS - 1; c++) {
-      const a = r * COLS + c, b = a + 1, d = a + COLS, e = d + 1;
-      // Only emit triangles where every vertex is inside the petal
-      if (particles[a].active && particles[d].active && particles[b].active)
-        idxArr.push(a, d, b);
-      if (particles[b].active && particles[d].active && particles[e].active)
-        idxArr.push(b, d, e);
+      const a = r*COLS+c, b = a+1, d = a+COLS, e = d+1;
+      idxArr.push(a, d, b,  b, d, e);
     }
   }
 
@@ -261,20 +218,51 @@ function syncGeo(geo, particles) {
   geo.computeVertexNormals();
 }
 
+// ── GLSL petal boundary (same maths as JS, runs per-pixel) ─────────────────
+// Pre-bake the constants from JS so GLSL never has to call cos/sin at runtime.
+const PETAL_GLSL = /* glsl */`
+float petalHW(float vp) {
+  float y     = 3.0 - 4.0 * vp;
+  float SCALE = ${_SCALE.toFixed(6)};
+  float c11   = ${_c11.toFixed(7)};
+  float c12   = ${_c12.toFixed(7)};
+  float P     = ${_P.toFixed(1)};
+  float R1    = ${_R1.toFixed(1)};
+  float a     = ${_a.toFixed(8)};
+  float b     = ${_b.toFixed(8)};
+  float A     = ${_A.toFixed(8)};
+
+  if (y < -1.0) return 0.0;
+
+  if (y <= 0.0) {
+    // Bottom half-ellipse: x²/4 + y² = 1
+    return 2.0 * sqrt(max(0.0, 1.0 - y * y)) * SCALE;
+  }
+
+  // Right upper arc — solve rotated ellipse quadratic for x
+  float dy   = y - c12;
+  float B    = 2.0 * dy * a * b * (1.0 - 1.0/P);
+  float C    = dy*dy * (b*b/P + a*a) - R1;
+  float disc = B*B - 4.0*A*C;
+  if (disc < 0.0) return 0.0;
+
+  float xRight = (-B + sqrt(disc)) / (2.0*A) + c11;
+  return max(0.0, xRight * SCALE);
+}
+`;
+
 // ── Control panel ──────────────────────────────────────────────────────────
 function createPanel(onStiffnessChange, onReset, onWind) {
   const panel = document.createElement('div');
   panel.id = 'physics-panel';
   panel.innerHTML = `
     <div class="panel-title">🌸 Petal Physics</div>
-
     <label class="param-row">
       <span class="param-label">Stiffness</span>
       <input type="range" id="stiffness-slider" min="1" max="100" value="35" step="1">
       <span class="param-val" id="stiffness-val">35%</span>
     </label>
     <div class="param-hint" id="stiffness-hint">Silk — gentle drape</div>
-
     <div class="panel-buttons">
       <button id="reset-btn">↺ Reset</button>
       <button id="wind-btn">💨 Wind</button>
@@ -285,7 +273,6 @@ function createPanel(onStiffnessChange, onReset, onWind) {
   const slider   = panel.querySelector('#stiffness-slider');
   const valLabel = panel.querySelector('#stiffness-val');
   const hint     = panel.querySelector('#stiffness-hint');
-
   const hints = [
     [0,  15,  'Rubber — stretches wildly'],
     [15, 35,  'Very soft and elastic'],
@@ -295,7 +282,6 @@ function createPanel(onStiffnessChange, onReset, onWind) {
     [88, 96,  'Cardboard — almost rigid'],
     [96, 101, 'Solid — no deformation'],
   ];
-
   slider.addEventListener('input', () => {
     const v = Number(slider.value);
     valLabel.textContent = v + '%';
@@ -305,7 +291,6 @@ function createPanel(onStiffnessChange, onReset, onWind) {
   });
   panel.querySelector('#reset-btn').addEventListener('click', onReset);
   panel.querySelector('#wind-btn').addEventListener('click', onWind);
-
   return panel;
 }
 
@@ -332,12 +317,7 @@ export function mountPhysics(container) {
 
   const composer = new EffectComposer(_renderer);
   composer.addPass(new RenderPass(scene, camera));
-  composer.addPass(new EffectPass(camera, new BloomEffect({
-    intensity: 0.30, luminanceThreshold: 0.78,
-    luminanceSmoothing: 0.55, radius: 0.45,
-  })));
 
-  // Lights
   scene.add(new THREE.AmbientLight(0xffffff, 2.2));
   const key = new THREE.DirectionalLight(0xfff4ee, 2.8);
   key.position.set(2, 4, 4);
@@ -353,8 +333,8 @@ export function mountPhysics(container) {
   let windOn      = false;
   let windTime    = 0;
 
-  const geo      = buildClothGeo(particles);
-  const alphaTex = buildPetalAlphaMap();
+  const geo = buildClothGeo(particles);
+
   const mat = new THREE.MeshStandardMaterial({
     color:             0xdd1111,
     emissive:          0x550000,
@@ -363,18 +343,36 @@ export function mountPhysics(container) {
     metalness:         0.02,
     side:        THREE.DoubleSide,
     transparent: true,
-    alphaMap:    alphaTex,
-    depthWrite:  true,
   });
+
+  // Force UV varying to be compiled even without a texture map
+  mat.defines = mat.defines || {};
+  mat.defines['USE_UV'] = '';
+
+  mat.onBeforeCompile = (shader) => {
+    // Inject the petal boundary function after #include <common>
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <common>',
+      '#include <common>\n' + PETAL_GLSL
+    );
+    // Per-pixel smooth clip before the alpha test
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <alphatest_fragment>',
+      `{
+        float vp   = 1.0 - vUv.y;              // 0 = top, 1 = bottom
+        float hw   = petalHW(vp);
+        float dist = abs(vUv.x - 0.5) - hw;    // negative = inside
+        float a    = smoothstep(0.006, -0.003, dist);
+        if (a < 0.001) discard;
+        diffuseColor.a *= a;
+      }
+      #include <alphatest_fragment>`
+    );
+  };
+
   scene.add(new THREE.Mesh(geo, mat));
 
-  // ── Rod ──
-  const rodCurve = makeRodCurve();
-  const rodGeo   = new THREE.TubeGeometry(rodCurve, 32, 0.016, 8, false);
-  const rodMat   = new THREE.MeshStandardMaterial({ color: 0x886655, roughness: 0.4, metalness: 0.6 });
-  scene.add(new THREE.Mesh(rodGeo, rodMat));
-
-  // ── Panel ──
+// ── Panel ──
   _panel = createPanel(
     v  => { stiffness = v; },
     () => { particles = makeParticles(); constraints = makeConstraints(particles); },
@@ -398,14 +396,8 @@ export function mountPhysics(container) {
     const dt = Math.min(clock.getDelta(), 0.033);
     windTime += dt;
 
-    if (windOn) {
-      const wStrength = Math.sin(windTime * 1.2) * 0.18;
-      for (const p of particles) {
-        if (!p.pinned && p.active) p.pos.z += wStrength * dt;
-      }
-    }
-
-    stepCloth(particles, constraints, dt, stiffness);
+    const windAccelZ = windOn ? Math.sin(windTime * 0.8) * 3.5 : 0;
+    stepCloth(particles, constraints, dt, stiffness, windAccelZ);
     syncGeo(geo, particles);
     controls.update();
     composer.render();
