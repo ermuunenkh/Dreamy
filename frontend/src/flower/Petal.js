@@ -20,15 +20,17 @@ function W(u) { return A0 + (A1 - A0) * Math.pow(Math.max(0, (u - U1) / (U2 - U1
 function T(v) { return U2 - H * Math.pow(v / A1, 2); }
 
 // ── Build parametric mesh ─────────────────────────────────────────────────
-export function buildPetalGeometry(scale = 0.4, uSegs = 100, vSegs = 100) {
+// vScale < 1 narrows the angular fan → thinner/more pointed petals
+export function buildPetalGeometry(scale = 0.4, uSegs = 70, vSegs = 70, vScale = 1.0) {
   const positions   = [];
   const petalCoords = []; // raw (u, v) for boundary math in fragment shader
   const uvs         = [];
   const indices     = [];
+  const vRange = A1 * vScale; // angular half-extent
 
   for (let j = 0; j <= vSegs; j++) {
     const vt = j / vSegs;
-    const v  = -A1 + vt * 2.0 * A1;  // v ∈ [-A1, +A1]
+    const v  = -vRange + vt * 2.0 * vRange;  // v ∈ [-vRange, +vRange]
 
     for (let i = 0; i <= uSegs; i++) {
       const ut = i / uSegs;
@@ -84,6 +86,7 @@ const fragmentShader = /* glsl */`
   uniform vec3  uColor;
   uniform vec3  uGlowColor;
   uniform float uTime;
+  uniform float uVScale;   // angular width multiplier (1 = full, <1 = narrower)
 
   // Domain constants
   const float U1    = 0.1;
@@ -93,15 +96,17 @@ const fragmentShader = /* glsl */`
   const float PPOW  = 0.1;
   const float HVAL  = 0.13;
 
-  // Angular half-width at height u
+  // Angular half-width at height u (scaled by uVScale to match geometry)
   float W(float u) {
     float qu = clamp((u - U1) / (U2 - U1), 0.0, 1.0);
-    return A0 + (A1 - A0) * pow(max(1e-5, qu), PPOW);
+    return (A0 + (A1 - A0) * pow(max(1e-5, qu), PPOW)) * uVScale;
   }
 
-  // Upper u-bound at angle v (parabolic top edge)
+  // Upper u-bound at angle v (parabolic top edge, v already scaled in geometry)
   float T(float v) {
-    return U2 - HVAL * pow(v / A1, 2.0);
+    // v passed in is the scaled coordinate; normalise by A1*uVScale
+    float vNorm = v / (A1 * uVScale);
+    return U2 - HVAL * pow(vNorm, 2.0);
   }
 
   void main() {
@@ -122,7 +127,7 @@ const fragmentShader = /* glsl */`
     // Because this is a function of u only (not v), the fade is perfectly
     // even across the full width — no V-dip or notch at the centre.
     float uNorm   = (u - U1) / (U2 - U1);   // 0 at base → 1 at tip
-    float botAlpha = smoothstep(0.0, 0.22, uNorm);
+    float botAlpha = smoothstep(0.0, 0.10, uNorm);
 
     float alpha = angAlpha * topAlpha * botAlpha;
     if (alpha < 0.004) discard;
@@ -153,8 +158,8 @@ const fragmentShader = /* glsl */`
 
 // ── PetalMesh ──────────────────────────────────────────────────────────────
 export class PetalMesh {
-  constructor(scale = 0.4, color = [0.88, 0.20, 0.28], glowColor = [1.00, 0.60, 0.35]) {
-    const geo = buildPetalGeometry(scale, 70, 70);
+  constructor(scale = 0.4, color = [0.88, 0.20, 0.28], glowColor = [1.00, 0.60, 0.35], vScale = 1.0) {
+    const geo = buildPetalGeometry(scale, 70, 70, vScale);
     this._mat = new THREE.ShaderMaterial({
       vertexShader,
       fragmentShader,
@@ -162,6 +167,7 @@ export class PetalMesh {
         uColor:     { value: new THREE.Color(...color) },
         uGlowColor: { value: new THREE.Color(...glowColor) },
         uTime:      { value: 0 },
+        uVScale:    { value: vScale },
       },
       side:        THREE.DoubleSide,
       transparent: true,

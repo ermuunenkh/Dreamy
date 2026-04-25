@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "WebFetch(domain:www.desmos.com)",
+      "WebSearch",
+      "WebFetch(domain:saved-work.desmos.com)"
+    ]
+  }
+}

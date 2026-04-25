@@ -11,6 +11,141 @@ html, body {
   background: #010108;
 }
 
+/* ── Floating nav ─────────────────────────────────────────────────────────── */
+#nav {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  display: flex;
+  gap: 8px;
+  background: rgba(1, 1, 12, 0.55);
+  border: 1px solid rgba(255, 100, 120, 0.18);
+  border-radius: 999px;
+  padding: 8px 18px;
+  backdrop-filter: blur(10px);
+}
+
+.nav-link {
+  color: rgba(255, 200, 210, 0.60);
+  text-decoration: none;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  padding: 4px 14px;
+  border-radius: 999px;
+  transition: color 0.2s, background 0.2s;
+}
+
+.nav-link:hover {
+  color: rgba(255, 200, 210, 0.95);
+  background: rgba(255, 80, 110, 0.12);
+}
+
+.nav-link.active {
+  color: #ffccd5;
+  background: rgba(255, 80, 110, 0.22);
+}
+
+/* ── Physics control panel ────────────────────────────────────────────────── */
+#physics-panel {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  background: rgba(1, 1, 12, 0.70);
+  border: 1px solid rgba(180, 120, 200, 0.22);
+  border-radius: 16px;
+  padding: 16px 24px 14px;
+  backdrop-filter: blur(14px);
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-family: system-ui, sans-serif;
+  color: rgba(220, 190, 230, 0.85);
+}
+
+.panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: rgba(240, 200, 255, 0.9);
+  margin-bottom: 2px;
+}
+
+.param-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.param-label {
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  min-width: 62px;
+  color: rgba(200, 170, 215, 0.75);
+}
+
+.param-val {
+  font-size: 12px;
+  min-width: 36px;
+  text-align: right;
+  color: rgba(240, 210, 255, 0.90);
+}
+
+.param-hint {
+  font-size: 11px;
+  color: rgba(180, 150, 200, 0.55);
+  letter-spacing: 0.04em;
+  text-align: center;
+  margin-top: -4px;
+}
+
+input[type="range"] {
+  flex: 1;
+  -webkit-appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, #c060e0, #ff80b0);
+  outline: none;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: #f0c0ff;
+  box-shadow: 0 0 6px rgba(200,100,255,0.7);
+  cursor: pointer;
+}
+
+.panel-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.panel-buttons button {
+  background: rgba(160, 80, 200, 0.18);
+  border: 1px solid rgba(180, 100, 220, 0.30);
+  border-radius: 999px;
+  color: rgba(220, 190, 240, 0.85);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  padding: 5px 18px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.panel-buttons button:hover {
+  background: rgba(160, 80, 200, 0.35);
+  color: #f0d0ff;
+}
+
+/* ── Canvas container ─────────────────────────────────────────────────────── */
 #app {
   width: 100%;
   height: 100vh;
