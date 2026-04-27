@@ -175,6 +175,33 @@ input[type="range"]::-webkit-slider-thumb {
   color: #f0d0ff;
 }
 
+/* ── Physics scene panel ──────────────────────────────────────────────────── */
+#scene-panel {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  background: rgba(1, 1, 12, 0.70);
+  border: 1px solid rgba(100, 180, 255, 0.22);
+  border-radius: 16px;
+  padding: 14px 24px 12px;
+  backdrop-filter: blur(14px);
+  min-width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-family: system-ui, sans-serif;
+  color: rgba(180, 220, 255, 0.85);
+  text-align: center;
+}
+
+.panel-subtitle {
+  font-size: 11px;
+  color: rgba(140, 190, 220, 0.55);
+  letter-spacing: 0.04em;
+}
+
 /* ── Canvas container ─────────────────────────────────────────────────────── */
 #app {
   width: 100%;

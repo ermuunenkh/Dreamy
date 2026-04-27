@@ -95,17 +95,33 @@ function makeParticles(mode = 'default', spiralAmount = 0) {
     for (let c = 0; c < COLS; c++) {
       const u  = c / (COLS - 1);
       const v  = r / (ROWS - 1);
-      const ry = -ROD_Y + v * H;
+      let   ry = -ROD_Y + v * H;
 
       let rx, rz;
 
       if (mode === 'spiral' && spiralAmount > 0) {
-        // Roll radius: 6 = nearly flat → 0.35 = very tight
-        const rollR  = 6.0 * Math.pow(1.0 - spiralAmount, 1.5) + 0.35;
-        const flatX  = (u - 0.5) * W;           // original grid x  (−W/2 … +W/2)
-        const angle  = flatX / rollR;            // arc angle on the cylinder
-        rx = rollR * Math.sin(angle);
-        rz = rollR * (1.0 - Math.cos(angle));   // bows toward viewer
+        // Symmetric centred Archimedean spiral — like a toilet-paper roll.
+        // rollR: ~4.5 at 0% (nearly flat) → 0.35 at 100% (229° each side = 458° total).
+        // Archimedean radial growth (r grows with |θ|) keeps inner and outer layers at
+        // different radii.
+        // rollR_min is kept strictly above W/(2π) so each arm stays under 180°.
+        // At exactly 180° the two arms would share the same XZ point and cross.
+        // 0.46 → θ_max = 1.4/0.46 ≈ 174° per arm = 348° total — nearly closed,
+        // no crossing mathematically possible.
+        const rollR = 4.0 * Math.pow(1.0 - spiralAmount, 1.5) + 0.46;
+        const θ     = ((u - 0.5) * W) / rollR;   // signed, symmetric
+        const absθ  = Math.abs(θ);
+        // Each full revolution adds 100% of rollR to the radius → clear layer gap.
+        const r = rollR + (absθ / (2.0 * Math.PI)) * (rollR * 1.0);
+        rx = r * Math.sin(θ);
+        rz = r * (1.0 - Math.cos(θ));
+        // ── Tip overlap ────────────────────────────────────────────────────────
+        // Both tips would land at the same Y, appearing side-by-side from above.
+        // sin(|θ|/2)⁴ is ≈0 through most of the ring and rises to 1 only right
+        // at the free ends — so the right tip lifts above the left tip and visually
+        // covers it (depth-ordering by Y under the elevated camera).
+        const tipFactor = Math.pow(Math.sin(absθ * 0.5), 4);
+        ry += (u - 0.5) * spiralAmount * 0.35 * tipFactor;
       } else {
         rx = (u - 0.5) * W;
         rz = petalEdgeZ(u);
@@ -372,7 +388,7 @@ function createPanel({ onStiffness, onReset, onWind, onMode, onSpiral, onTilt })
 // ── Mount / Unmount ────────────────────────────────────────────────────────
 export function mountPhysics(container) {
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xffffff);
+  scene.background = new THREE.Color(0x010108);
 
   const camera = new THREE.PerspectiveCamera(44, container.clientWidth / container.clientHeight, 0.1, 100);
   camera.position.set(0, 0.0, 5.5);
@@ -446,18 +462,44 @@ export function mountPhysics(container) {
     );
   };
 
-  // meshGroup lets us rotate the entire cloth (used in 'tilted' mode)
+  // ── Group hierarchy for tilt ───────────────────────────────────────────────
+  // pivotGroup sits at the bottom tip of the petal (y = -ROD_Y in world space).
+  // Rotating it tilts the whole petal around that point instead of the centre.
+  // meshGroup is offset +ROD_Y inside pivotGroup so world positions are unchanged
+  // when tiltAngle is 0.
   const meshGroup = new THREE.Group();
+  meshGroup.position.y = ROD_Y;           // offset so tip aligns with pivotGroup origin
   meshGroup.add(new THREE.Mesh(geo, mat));
-  scene.add(meshGroup);
+
+  const pivotGroup = new THREE.Group();
+  pivotGroup.position.y = -ROD_Y;        // place the pivot at the bottom tip
+  pivotGroup.add(meshGroup);
+  scene.add(pivotGroup);
 
   // ── Mode switching ──
   function applyMode(m) {
     mode        = m;
     particles   = makeParticles(mode, spiralAmount);
     constraints = makeConstraints(particles);
-    meshGroup.rotation.x = mode === 'tilted' ? tiltAngle : 0;
-    meshGroup.rotation.z = 0;
+    // Tilt is applied to pivotGroup (rotates around bottom tip).
+    // meshGroup handles no rotation of its own.
+    pivotGroup.rotation.x = mode === 'tilted' ? tiltAngle : 0;
+    meshGroup.rotation.x  = 0;
+    meshGroup.rotation.y  = 0;
+    meshGroup.rotation.z  = 0;
+    // In spiral mode shift the camera left so it looks from ~20° to the right,
+    // making the scroll depth (Z) visible without the mesh going off-screen.
+    // In other modes restore the front-on position.
+    if (m === 'spiral') {
+      // Look from ~70° elevation so the ring cross-section is visible as
+      // an "O" — inner hole and outer ring clearly separated.
+      camera.position.set(0, 5.5, 2.0);
+      controls.target.set(0, 0.0, 0.3);
+    } else {
+      camera.position.set(0, 0.0, 5.5);
+      controls.target.set(0, -0.1, 0);
+    }
+    controls.update();
   }
 
   // ── Panel ──
@@ -475,7 +517,7 @@ export function mountPhysics(container) {
     },
     onTilt:      ang => {
       tiltAngle = ang;
-      if (mode === 'tilted') meshGroup.rotation.x = tiltAngle;
+      if (mode === 'tilted') pivotGroup.rotation.x = tiltAngle;
     },
   });
 

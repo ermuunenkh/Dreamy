@@ -1,9 +1,11 @@
 import { mountRose,    unmountRose    } from './pages/rose.js';
 import { mountPhysics, unmountPhysics } from './pages/physics.js';
+import { mountScene,   unmountScene   } from './pages/physicsScene.js';
 
 const ROUTES = {
   '/rose':    { mount: mountRose,    unmount: unmountRose    },
   '/physics': { mount: mountPhysics, unmount: unmountPhysics },
+  '/scene':   { mount: mountScene,   unmount: unmountScene   },
 };
 
 let _current = null;   // { unmount, path }
